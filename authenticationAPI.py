@@ -1,45 +1,55 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from datetime import datetime
 
 class Auth(BaseModel):
     authid: str
     token: str
-    date: str
+    date: datetime
 
 app = FastAPI()
+
+auths={}
 
 @app.get("/")
 async def root():
     return {"message": "Hello World"}
 
-@app.get("/login")
+@app.get("/v1/authetications")
 async def all_auth():
-    return users
+    return auths
 
-@app.get("/authetication/{authid}")
+@app.get("/v1/authetications/{authid}")
 async def get_auth(authid: str):
-    if authid in users:
-        return users[authid]
+    if authid in auths:
+        return auths[authid]
     else:
-        return {"Authentication not found"}
+        return {"404: Authentication not found"}
     
-@app.post("/authentication")
+@app.post("/v1/authentications")
 async def post_auth(auth: Auth):
-    users[auth.authid] = auth
+    auths[auth.authid] = auth
     return auth
 
-@app.delete("/authentication/{authid}")
+@app.delete("/v1/authentications/{authid}")
 async def del_auth(authid: str):
-    if authid in users:
-        users.pop(authid)
-        return {"Authentication deleted successfully"}
+    if authid in auths:
+        auths.pop(authid)
+        return {"200: Authentication deleted successfully"}
     else:
-        return {"Authentication not found"}
+        return {"404: Authentication not found"}
     
-@app.put("/authentication/{authid}")
-async def put_auth(authid: str, auth: Auth):
-    if authid in users:
-        users[authid] = auth
-        return {"Authentication list updated successfully"}
+@app.put("/v1/authentications/{authid}")
+async def put_auth(authid: str, auth: Auth):  ##mudar para update
+    if authid in auths:
+        auths[authid] = auth
+        return {"200: Authentication list updated successfully"}
     else:
-        return {"Authentication not found"}
+        return {"404: Authentication not found"}
+
+@app.put("/v1/authentications/register")
+async def put_register(authid: str):        #a date seria a do momento e o token seria gerado?
+    if authid in auths:
+        return { "40: User id already exists"}
+    else:
+        date = datetime.now()
