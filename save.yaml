@@ -1,0 +1,246 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: egs-uniride
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: auth-api
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: 5432
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-config
+  namespace: egs-uniride
+data:
+  script.sh: |-
+    #!/bin/bash
+    echo -e $POD_NAME
+    if [[ "$POD_NAME" == "postgresql-0" ]]; then
+      export POSTGRESQL_REPLICATION_MODE="master"
+      export POSTGRESQL_USERNAME=$PU
+      export POSTGRESQL_PASSWORD=$PP
+      export POSTGRESQL_DATABASE="gicdb"
+    else
+      export POSTGRESQL_REPLICATION_MODE="slave"
+      export POSTGRESQL_MASTER_HOST="postgresql-0.postgresql.prof.svc.cluster.local"
+      export POSTGRESQL_MASTER_PORT_NUMBER="5432"
+      export POSTGRESQL_USERNAME=$PU
+      export POSTGRESQL_PASSWORD=$PP
+      export POSTGRESQL_DATABASE="gicdb"
+    fi
+    echo -e $POSTGRESQL_REPLICATION_MODE
+    exec /opt/bitnami/scripts/postgresql/entrypoint.sh /opt/bitnami/scripts/postgresql/run.sh
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: egs-uniride
+spec:
+  serviceName: postgresql
+  selector:
+    matchLabels:
+      app: auth-api
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: auth-api
+    spec:
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: postgresql
+          image: bitnami/postgresql:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: kong
+            - name: POSTGRES_DB
+              value: kong
+            - name: POSTGRES_PASSWORD
+              value: kong
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POSTGRESQL_REPLICATION_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: rep_user
+            - name: POSTGRESQL_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: rep_pass
+            - name: PU
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: username
+            - name: PP
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: password
+          command:
+            - /scripts/script.sh
+          securityContext:
+            runAsUser: 1001
+          volumeMounts:
+            - name: config
+              mountPath: /
+            - name: db-data-kong-postgres-postgresql-0
+              mountPath: db-data-kong-postgres:/var/lib/postgresql/data
+      volumes:
+        - name: config
+          configMap:
+            name: postgresql-config
+            defaultMode: 0755
+            items:
+              - key: script.sh
+                path: script.sh
+  volumeClaimTemplates:
+    - metadata:
+        name: db-data-kong-postgres
+        namespace: egs-uniride
+      spec:
+        accessModes: [ "ReadWriteMany" ]
+        storageClassName: longhorn
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-api
+  namespace: egs-uniride
+spec:
+  selector:
+    matchLabels:
+      app: auth-api
+  template:
+    metadata:
+      labels:
+        app: auth-api
+    spec:
+      containers:
+        # - name: kong-database
+        #   image: postgres:9.6
+        #   ports:
+        #     - containerPort: 5432
+        #   env:
+        #     - name: POSTGRES_USER
+        #       value: kong
+        #     - name: POSTGRES_DB
+        #       value: kong
+        #     - name: POSTGRES_PASSWORD
+        #       value: kong
+          
+
+        - name: kong
+          image: kong
+          env:
+            - name: LC_CTYPE 
+              value: en_US.UTF-8
+            - name: LC_ALL 
+              value: en_US.UTF-8
+            - name: KONG_DATABASE 
+              value: postgres
+            - name: KONG_PG_HOST 
+              value: kong-database
+            - name: KONG_PG_USER 
+              value: kong
+            - name: KONG_PG_PASSWORD 
+              value: kong
+            - name: KONG_CASSANDRA_CONTACT_POINTS 
+              value: kong-database
+            - name: KONG_PROXY_ACCESS_LOG 
+              value: /dev/stdout
+            - name: KONG_ADMIN_ACCESS_LOG 
+              value: /dev/stdout
+            - name: KONG_PROXY_ERROR_LOG 
+              value: /dev/stderr
+            - name: KONG_ADMIN_ERROR_LOG 
+              value: /dev/stderr
+            - name: KONG_ADMIN_LISTEN 
+              value: 0.0.0.0:8001, 0.0.0.0:8444 ssl
+          ports:
+            - containerPort: 8000
+            - containerPort: 8443
+            - containerPort: 8001
+            - containerPort: 8444
+
+        - name: konga
+          image: pantsel/konga
+          ports:
+            - containerPort: 1337
+          env:
+            - name: NODE_ENV 
+              value: production
+          #dependsOn:
+          #  - name: kong-database
+      volumes:
+        - name: db-data-kong-postgres-postgresql-0
+          persistentVolumeClaim:
+            claimName: db-data-kong-postgres-postgresql-0
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: auth-api-job
+  namespace: egs-uniride
+spec:
+  template:
+    metadata:
+      labels:
+        app: auth-api
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kong-migrations
+          image: kong
+          env:
+            - name: KONG_DATABASE
+              value: postgres
+            - name: KONG_PG_HOST
+              value: 127.0.0.1
+            - name: KONG_PG_PASSWORD
+              value: kong
+            - name: KONG_CASSANDRA_CONTACT_POINTS
+              value: kong-database
+            - name: KONG_PG_PORT
+              value: "5432"
+          command: ["kong","migrations","bootstrap"]
+      volumes:
+        - name: db-data-kong-postgres-postgresql-0
+          persistentVolumeClaim:
+            claimName: db-data-kong-postgres-postgresql-0
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authapi-svc
+  namespace: egs-uniride
+spec:
+  ports:
+    - protocol: TCP
+      port: 8020
+      #nodePort: 32080
+      name: authapi-svc-port
+  selector:
+    app: auth-api
+  #type: NodePort
+  type: ClusterIP
